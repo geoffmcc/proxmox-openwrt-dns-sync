@@ -1,178 +1,254 @@
+# Proxmox LXC DNS Sync for OpenWrt
 
-## OpenWrt dnsmasq and ujail compatibility
+Synchronize **statically addressed Proxmox LXC containers** into OpenWrt's
+`dnsmasq` local DNS, using their Proxmox hostname and VLAN. DHCP-managed
+containers are intentionally skipped: OpenWrt can manage their names through
+its DHCP leases.
 
-### Important: Do not restart dnsmasq for routine DNS synchronization
+The integration uses a short-lived SSH connection from Proxmox to OpenWrt and
+a systemd timer. It does not require another container, daemon, or DNS server.
 
-OpenWrt 25.12 runs dnsmasq inside a `ujail` environment.
+## How it works
 
-The generated hosts file is individually mounted inside this jail:
+1. `proxmox-sync.sh` reads container configurations using `pct`.
+2. It skips containers whose `net0` uses `ip=dhcp`.
+3. For eligible static containers, it builds `IP hostname.domain` records from
+   the hostname, static IPv4 address, and VLAN tag.
+4. Preview mode displays the proposed records without changing OpenWrt.
+5. `--apply` sends the complete managed record set over restricted SSH to
+   `openwrt-receiver.sh`.
+6. The receiver validates records, updates `/etc/hosts.proxmox-sync`, signals
+   `dnsmasq` to reload its additional hosts file, and checks DNS resolution.
+
+The sender refuses to publish if it finds invalid static configuration or
+generates zero static records. It does not silently wipe the DNS file.
+
+## Domain and VLAN mapping
+
+The scripts are configured for the `10.47.0.0` private network and
+`home.digitaltrainwreck.com` domain. Adapt **both scripts** before using them
+on another network.
+
+| VLAN | Subnet | DNS suffix |
+| --- | --- | --- |
+| 10 | `10.47.10.0/24` | `management.home.digitaltrainwreck.com` |
+| 15 | `10.47.15.0/24` | `infra.home.digitaltrainwreck.com` |
+| 20 | `10.47.20.0/24` | `servers.home.digitaltrainwreck.com` |
+| 30 | `10.47.30.0/24` | `home.digitaltrainwreck.com` |
+| 40 | `10.47.40.0/24` | `iot.home.digitaltrainwreck.com` |
+| 50 | `10.47.50.0/24` | `guest.home.digitaltrainwreck.com` |
+| 60 | `10.47.60.0/24` | `personal.home.digitaltrainwreck.com` |
+
+For example, a container named `jellyfin` on VLAN 20 with static address
+`10.47.20.10` produces:
 
 ```text
-/etc/hosts.proxmox-sync
+10.47.20.10 jellyfin.servers.home.digitaltrainwreck.com
 ```
 
-This has important consequences for how DNS records must be updated.
+## Files
 
-### Problem 1: Restarting dnsmasq can interrupt DNS and DHCP
+| File | Role |
+| --- | --- |
+| `proxmox-sync.sh` | Proxmox-side sender; preview or publish |
+| `openwrt-receiver.sh` | OpenWrt-side validation and DNS update |
+| `test-proxmox-sync.sh` | Mocked sender regression test |
+| `README.md` | Project overview and usage |
 
-The original receiver used:
+## Prerequisites
+
+- Proxmox VE with the `pct` command and access to LXC configuration.
+- OpenWrt with `dnsmasq`, `ubus`, and a configured additional hosts file.
+- An SSH key and tightly restricted command on OpenWrt that runs the receiver.
+- A known working DNS path to OpenWrt for validation.
+- At least one eligible static LXC record; an all-DHCP inventory is not
+  published by this version.
+
+The receiver expects `/etc/hosts.proxmox-sync` to exist and `dnsmasq` to be
+configured to read it through `addn-hosts`.
+
+**Security:** The Proxmox script connects as `root` using a dedicated key in
+batch mode. Restrict that key on OpenWrt to the receiver command and disable
+unnecessary SSH capabilities (port forwarding, PTY, etc.). Do not use an
+unrestricted general-purpose root SSH key for this integration.
+
+## Configuration
+
+The Proxmox sender defaults to:
+
+```bash
+DNS_SERVER=10.47.10.1
+SSH_KEY=/root/.ssh/proxmox-dns-sync
+```
+
+These can be overridden with environment variables
+`PROXMOX_DNS_SYNC_SERVER` and `PROXMOX_DNS_SYNC_KEY`.
+
+The OpenWrt receiver uses:
 
 ```sh
-mv -f "$TMP" "$DEST"
-/etc/init.d/dnsmasq restart
+DEST=/etc/hosts.proxmox-sync
+DNS_SERVER=10.47.15.1
 ```
 
-On the tested OpenWrt 25.12.6 installation, restarting dnsmasq triggered repeated `udhcpc` attempts.
+Review these values, the VLAN mappings, and the local DNS forwarding setup
+before installation. The sender's actual deployed path may differ from the
+filename in this gist.
 
-The remote synchronization exceeded the Proxmox systemd service's 30-second timeout.
+## Usage on Proxmox
 
-The restart was interrupted, leaving dnsmasq stopped.
+Run the sender as an account authorized to inspect Proxmox containers and use
+the configured SSH key (typically root).
 
-Because AdGuard Home forwarded internal DNS queries to OpenWrt, internal hostname resolution failed with SERVFAIL.
+Preview without modifying DNS:
 
-### Problem 2: Atomic replacement breaks the jail's file reference
-
-OpenWrt's ujail bind-mounts the generated hosts file.
-
-Replacing that file using `mv` or BusyBox `cp` changes its inode.
-
-The host then sees the new file, while dnsmasq's jail may continue referencing the old inode.
-
-Consequently, SIGHUP can succeed without loading the new DNS records.
-
-This was verified by comparing:
-
-```sh
-ls -li /etc/hosts.proxmox-sync
+```bash
+bash proxmox-sync.sh
 ```
 
-With:
+Apply the complete record set:
 
-```sh
-ls -li /proc/ACTUAL_DNSMASQ_PID/root/etc/hosts.proxmox-sync
+```bash
+bash proxmox-sync.sh --apply
 ```
 
-The original failure also appeared in `/proc/ACTUAL_DNSMASQ_PID/mountinfo` as a mount referencing a deleted hosts file.
+A DHCP container produces an informational diagnostic such as:
 
-### Solution: Preserve the inode and signal dnsmasq
-
-The corrected receiver writes through the existing file:
-
-```sh
-cat "$TMP" > "$DEST"
+```text
+INFO: Skipping DHCP-managed CT 106
 ```
 
-This preserves the file's inode.
+That is normal, not a service failure. An invalid static configuration is
+still an error. The script exits nonzero rather than publishing an incomplete
+record set.
 
-It then asks OpenWrt's service manager to send SIGHUP:
+### Automation
 
-```sh
-ubus call service signal '{"name":"dnsmasq","signal":1}'
+The sender can be installed at `/usr/local/sbin/proxmox-dns-sync` and invoked
+by a systemd oneshot service and timer. An existing installation may already
+have `proxmox-dns-sync.service` and `proxmox-dns-sync.timer` configured.
+
+Check a deployed timer and service with:
+
+```bash
+systemctl list-timers proxmox-dns-sync.timer
+systemctl status proxmox-dns-sync.service --no-pager -l
+journalctl -u proxmox-dns-sync.service -n 50 --no-pager
 ```
 
-SIGHUP causes dnsmasq to reread files supplied through `addn-hosts` without a full service restart.
+This gist contains the sender and receiver scripts, **not a complete
+one-command installer for the SSH restrictions, systemd units, or timer**.
+Those parts must be configured for the target systems.
 
-The receiver also:
+## DHCP behavior and record lifecycle
 
-- Validates incoming records.
-- Rejects empty or malformed updates.
-- Checks that dnsmasq is running.
-- Saves previous records for recovery.
-- Verifies that the written file matches the input.
-- Verifies each hostname resolves to its expected IP.
-- Attempts to restore previous records on failure.
-- Logs success and failure messages.
+Only static records are published by this integration. A container with
+`net0: ... ip=dhcp ...` is omitted even if it has a Proxmox hostname.
 
-### First installation or migration from the original receiver
+The receiver replaces the **complete managed record set** on each successful
+publication. Therefore, when a previously static container switches to DHCP,
+its old static record disappears on the next successful sync; its DHCP name
+must be managed separately by OpenWrt.
 
-Create the generated hosts file before starting dnsmasq:
+The receiver rejects empty submissions, so an inventory with no static
+containers cannot clear the managed file. Manual cleanup is needed if the
+last static container is removed.
+
+## OpenWrt `dnsmasq` and `ujail`
+
+On OpenWrt 25.12, `dnsmasq` may run inside `ujail`, which bind-mounts the
+additional hosts file. **Do not replace `/etc/hosts.proxmox-sync` by renaming
+another file over it:** the jailed process can remain bound to the old inode.
+
+The receiver deliberately writes through the existing file with
+`cat "$TMP" > "$DEST"`, then requests a SIGHUP through `ubus`. Routine
+synchronization does **not** restart `dnsmasq`.
+
+The receiver performs validation, keeps a temporary recovery copy, checks
+the updated contents, and verifies published hostnames. Because the in-place
+write is not atomic, recovery after a crash or power loss is best-effort.
+
+If migrating from an older receiver that used atomic file replacement, the
+`ujail` bind mount may already reference a deleted inode. Repairing that
+condition may require a carefully planned one-time `dnsmasq` restart with
+independent access to OpenWrt. Do not do this as part of routine syncs.
+
+### Initial OpenWrt setup
+
+Create the hosts file **before** dnsmasq starts with its additional-hosts
+configuration:
 
 ```sh
 touch /etc/hosts.proxmox-sync
 chmod 644 /etc/hosts.proxmox-sync
 ```
 
-Configure dnsmasq to use it through OpenWrt UCI:
+Configure dnsmasq via UCI to include:
 
 ```text
 list addnhosts '/etc/hosts.proxmox-sync'
 ```
 
-If migrating from an installation that previously replaced the hosts file, the jail may still reference a deleted inode.
-
-A controlled dnsmasq restart is required to recreate that mount.
-
-Perform this directly on OpenWrt during a maintenance window, with independent access to the router.
-
-Afterward, verify that the host and jailed process reference the same inode.
-
-Do not repeatedly restart dnsmasq during normal synchronization.
-
-### Verification
-
-Check the service:
-
-```sh
-/etc/init.d/dnsmasq status
-```
-
-Check DNS resolution:
-
-```sh
-nslookup jellyfin.servers.home.digitaltrainwreck.com 10.47.15.1
-```
-
-Check the generated records:
-
-```sh
-cat /etc/hosts.proxmox-sync
-```
-
-Check the inode:
+For an existing installation, do not restart dnsmasq just to apply a normal
+record update. When diagnosing a stale bind mount, compare the file inode on
+the router to the file visible to the **actual** dnsmasq process:
 
 ```sh
 ls -li /etc/hosts.proxmox-sync
+ls -li /proc/ACTUAL_DNSMASQ_PID/root/etc/hosts.proxmox-sync
 ```
 
-For an end-to-end test, add a temporary valid record to a complete copy of the existing hosts file, submit it through the receiver, and confirm:
+The original failure occurred when replacing the file changed its inode:
+the jailed dnsmasq continued reading the old reference. A full restart also
+triggered repeated `udhcpc` attempts in the tested installation, exceeded
+the Proxmox service's 30-second timeout, and temporarily disrupted internal
+DNS via AdGuard Home. This is why the in-place update and SIGHUP are important.
 
-1. The temporary hostname resolves.
-2. The file inode remains unchanged.
-3. dnsmasq remains running.
-4. Restoring the original records removes the temporary hostname.
+### Receiver checks
 
-Always verify that your test input includes every existing record before submitting it.
+On OpenWrt:
 
-### Known limitations
-
-The in-place update is not atomic.
-
-A crash or power loss during the write could leave partially written records.
-
-The rollback mechanism is best-effort and does not guarantee recovery from every failure.
-
-DNS verification is performed against the configured OpenWrt DNS address and depends on BusyBox nslookup output formatting.
-
-The current implementation is designed for one dnsmasq instance and the specific VLAN/domain mappings configured in the script.
-
-Do not assume it is portable to other OpenWrt configurations without testing.
-
-### Tested environment
-
-- Proxmox VE 9.2.24
-- OpenWrt 25.12.6
-- dnsmasq running under ujail
-- AdGuard Home forwarding the internal DNS zone to OpenWrt
-- Six Proxmox LXC records
-- Static IPv4 addresses with VLAN-aware hostnames
-
-Tested successfully:
-
-- Invalid record rejection
-- Unchanged-record handling
-- Adding a temporary DNS record
-- Removing the temporary DNS record
-- Preserving the hosts file inode
-- Keeping dnsmasq running during synchronization
-- Automatic execution through the Proxmox systemd timer
+```sh
+/etc/init.d/dnsmasq status
+cat /etc/hosts.proxmox-sync
+nslookup jellyfin.servers.home.digitaltrainwreck.com 10.47.15.1
 ```
+
+An end-to-end record-add/remove test must submit a **complete copy** of the
+current managed records plus the temporary test record, then restore the
+complete original set. Never send a single-record test to the live receiver.
+
+## Testing
+
+Run the sender's mocked regression test on a Bash-capable machine:
+
+```bash
+bash test-proxmox-sync.sh
+```
+
+It verifies that a mixed static/DHCP inventory produces only the static
+record and that the SSH submission contains the same record. It does not
+exercise a real router, systemd timer, or network connection.
+
+For live verification, first inspect the sender's preview, then apply and
+confirm resolution against the configured OpenWrt DNS server. Avoid testing
+with partial record submissions, which can replace the complete managed set.
+
+## Limitations
+
+- Reads only `net0` and IPv4 static addresses; not additional interfaces,
+  IPv6, or DHCP lease addresses.
+- Uses fixed VLAN/domain mappings, not automatic network discovery.
+- Requires the configured VLAN and static IPv4 subnet to match.
+- Publishes an entire set of managed records, not incremental changes.
+- Refuses an empty static-record set.
+- Does not configure OpenWrt DHCP, AdGuard Home, SSH authorization, or systemd.
+- Assumes one `dnsmasq` instance and the receiver's expected BusyBox `nslookup`
+  output during verification.
+
+## Tested environment
+
+The original receiver's in-place update approach was validated on Proxmox
+VE 9.2.24 and OpenWrt 25.12.6 with `dnsmasq` running under `ujail`.
+The DHCP-aware sender change was validated with mocked `pct` and `ssh`
+commands. Verify it against your live configuration before scheduling it.
