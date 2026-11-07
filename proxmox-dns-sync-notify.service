@@ -1,0 +1,6 @@
+[Unit]
+Description=Email root about a Proxmox DNS synchronization failure
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/proxmox-dns-sync-notify-failure

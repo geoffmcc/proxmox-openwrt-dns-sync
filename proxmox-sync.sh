@@ -43,10 +43,11 @@ while read -r vmid; do
         40) domain="iot.$DOMAIN_ROOT" ;;
         50) domain="guest.$DOMAIN_ROOT" ;;
         60) domain="personal.$DOMAIN_ROOT" ;;
+        65) domain="automation.$DOMAIN_ROOT" ;;
         *) printf 'ERROR: Unsupported VLAN %s on CT %s\n' "$vlan" "$vmid" >&2; exit 1 ;;
     esac
 
-    if [[ ! $hostname =~ ^[a-z0-9][a-z0-9-]*$ || ! $ip =~ ^10\.47\.(10|15|20|30|40|50|60)\.([0-9]{1,3})$ ]]; then
+    if [[ ! $hostname =~ ^[a-z0-9][a-z0-9-]*$ || ! $ip =~ ^10\.47\.(10|15|20|30|40|50|60|65)\.([0-9]{1,3})$ ]]; then
         printf 'ERROR: Invalid static hostname/IP on CT %s\n' "$vmid" >&2
         exit 1
     fi

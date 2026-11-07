@@ -71,6 +71,7 @@ BEGIN {
     suffix[40]="iot.home.digitaltrainwreck.com"
     suffix[50]="guest.home.digitaltrainwreck.com"
     suffix[60]="personal.home.digitaltrainwreck.com"
+    suffix[65]="automation.home.digitaltrainwreck.com"
 }
 
 {

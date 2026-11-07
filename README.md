@@ -38,6 +38,7 @@ on another network.
 | 40 | `10.47.40.0/24` | `iot.home.digitaltrainwreck.com` |
 | 50 | `10.47.50.0/24` | `guest.home.digitaltrainwreck.com` |
 | 60 | `10.47.60.0/24` | `personal.home.digitaltrainwreck.com` |
+| 65 | `10.47.65.0/24` | `automation.home.digitaltrainwreck.com` |
 
 For example, a container named `jellyfin` on VLAN 20 with static address
 `10.47.20.10` produces:
@@ -52,7 +53,8 @@ For example, a container named `jellyfin` on VLAN 20 with static address
 | --- | --- |
 | `proxmox-sync.sh` | Proxmox-side sender; preview or publish |
 | `openwrt-receiver.sh` | OpenWrt-side validation and DNS update |
-| `test-proxmox-sync.sh` | Mocked sender regression test |
+| `notify-failure.sh`, `clear-failure.sh` | Email root once per failure episode and re-arm on recovery |
+| `proxmox-dns-sync-notify.service`, `notification.conf` | systemd failure hook and notification service |
 | `README.md` | Project overview and usage |
 
 ## Prerequisites
@@ -136,9 +138,34 @@ systemctl status proxmox-dns-sync.service --no-pager -l
 journalctl -u proxmox-dns-sync.service -n 50 --no-pager
 ```
 
-This gist contains the sender and receiver scripts, **not a complete
+This gist contains the sender, receiver, and notification files, **not a complete
 one-command installer for the SSH restrictions, systemd units, or timer**.
 Those parts must be configured for the target systems.
+
+### Failure email
+
+The optional systemd hook emails `root` once when the sync fails, suppresses
+repeated notifications while failures continue, and re-arms after a successful
+run. It requires `flock`, `sendmail`, a working root mail route, and a running
+host. Mail transport acceptance does not prove delivery to an external inbox.
+
+After reviewing the files, install them on Proxmox as root:
+
+```bash
+install -m 0700 notify-failure.sh /usr/local/sbin/proxmox-dns-sync-notify-failure
+install -m 0700 clear-failure.sh /usr/local/sbin/proxmox-dns-sync-clear-failure
+install -m 0644 proxmox-dns-sync-notify.service /etc/systemd/system/proxmox-dns-sync-notify.service
+install -d -m 0755 /etc/systemd/system/proxmox-dns-sync.service.d
+install -m 0644 notification.conf /etc/systemd/system/proxmox-dns-sync.service.d/notification.conf
+systemctl daemon-reload
+```
+
+Check the service hook with `systemctl show proxmox-dns-sync.service -p OnFailure`.
+Test delivery through your mail setup and confirm receipt. The notifier only
+observes this service; it cannot report a complete host outage.
+
+Add VLAN 65 to **both** deployed scripts before publishing static records on
+that VLAN. Updating the sender alone does not update the receiver on OpenWrt.
 
 ## DHCP behavior and record lifecycle
 
@@ -220,15 +247,8 @@ complete original set. Never send a single-record test to the live receiver.
 
 ## Testing
 
-Run the sender's mocked regression test on a Bash-capable machine:
-
-```bash
-bash test-proxmox-sync.sh
-```
-
-It verifies that a mixed static/DHCP inventory produces only the static
-record and that the SSH submission contains the same record. It does not
-exercise a real router, systemd timer, or network connection.
+Test mixed static/DHCP inventories, invalid static configurations, and both
+sides of every VLAN mapping with mock inputs before deployment.
 
 For live verification, first inspect the sender's preview, then apply and
 confirm resolution against the configured OpenWrt DNS server. Avoid testing
