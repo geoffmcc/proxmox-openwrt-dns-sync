@@ -10,7 +10,7 @@ a systemd timer. It does not require another container, daemon, or DNS server.
 
 ## How it works
 
-1. `proxmox-sync.sh` reads container configurations using `pct`.
+1. `proxmox-sync.sh` reads local container configuration files from `/etc/pve/local/lxc/`.
 2. It skips containers whose `net0` uses `ip=dhcp`.
 3. For eligible static containers, it builds `IP hostname.domain` records from
    the hostname, static IPv4 address, and VLAN tag.
@@ -59,7 +59,7 @@ For example, a container named `jellyfin` on VLAN 20 with static address
 
 ## Prerequisites
 
-- Proxmox VE with the `pct` command and access to LXC configuration.
+- Proxmox VE with read access to local LXC configuration in `/etc/pve/local/lxc/`.
 - OpenWrt with `dnsmasq`, `ubus`, and a configured additional hosts file.
 - An SSH key and tightly restricted command on OpenWrt that runs the receiver.
 - A known working DNS path to OpenWrt for validation.

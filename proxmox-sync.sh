@@ -15,9 +15,11 @@ fi
 TMP=$(mktemp)
 trap 'rm -f "$TMP"' EXIT
 
-while read -r vmid; do
-    [[ -n $vmid ]] || continue
-    config=$(pct config "$vmid") || { echo "ERROR: Cannot read CT $vmid" >&2; exit 1; }
+shopt -s nullglob
+for config_file in /etc/pve/local/lxc/[0-9]*.conf; do
+    vmid=${config_file##*/}
+    vmid=${vmid%.conf}
+    config=$(cat "$config_file") || { echo "ERROR: Cannot read CT $vmid" >&2; exit 1; }
     hostname=$(printf '%s\n' "$config" | sed -n 's/^hostname: //p')
     network=$(printf '%s\n' "$config" | sed -n 's/^net0: //p')
     ip=$(printf '%s\n' "$network" | tr ',' '\n' | sed -n 's/^ip=\([^/]*\).*/\1/p')
@@ -56,7 +58,7 @@ while read -r vmid; do
         exit 1
     fi
     printf '%s %s.%s\n' "$ip" "$hostname" "$domain" >> "$TMP"
-done < <(pct list | awk 'NR > 1 {print $1}')
+done
 
 # Fail closed: the receiver rejects empty input, and this also prevents
 # accidentally removing all previously managed static DNS records.
