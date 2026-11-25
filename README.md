@@ -275,3 +275,7 @@ The original receiver's in-place update approach was validated on Proxmox
 VE 9.2.24 and OpenWrt 25.12.6 with `dnsmasq` running under `ujail`.
 The direct-configuration sender was deployed and checked on the Proxmox host
 on November 16, 2026. Verify it against your own configuration before scheduling it.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
