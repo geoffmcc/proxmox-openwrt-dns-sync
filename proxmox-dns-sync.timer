@@ -1,0 +1,11 @@
+[Unit]
+Description=Automatically synchronize Proxmox DNS every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+AccuracySec=30s
+Unit=proxmox-dns-sync.service
+
+[Install]
+WantedBy=timers.target
