@@ -54,6 +54,7 @@ For example, a container named `jellyfin` on VLAN 20 with static address
 | `proxmox-sync.sh` | Proxmox-side sender; preview or publish |
 | `openwrt-receiver.sh` | OpenWrt-side validation and DNS update |
 | `notify-failure.sh`, `clear-failure.sh` | Email root once per failure episode and re-arm on recovery |
+| `proxmox-dns-sync.service`, `proxmox-dns-sync.timer` | Sender service and five-minute schedule |
 | `proxmox-dns-sync-notify.service`, `notification.conf` | systemd failure hook and notification service |
 | `README.md` | Project overview and usage |
 
@@ -94,8 +95,8 @@ DNS_SERVER=10.47.15.1
 ```
 
 Review these values, the VLAN mappings, and the local DNS forwarding setup
-before installation. The sender's actual deployed path may differ from the
-filename in this gist.
+before installation. The sender's installed path may differ from the
+filename in this repository.
 
 ## Usage on Proxmox
 
@@ -127,8 +128,9 @@ record set.
 ### Automation
 
 The sender can be installed at `/usr/local/sbin/proxmox-dns-sync` and invoked
-by a systemd oneshot service and timer. An existing installation may already
-have `proxmox-dns-sync.service` and `proxmox-dns-sync.timer` configured.
+by a systemd oneshot service and timer. The included service and timer reflect
+the existing host installation. Review them and configure SSH and OpenWrt before
+enabling them.
 
 Check a deployed timer and service with:
 
@@ -138,9 +140,9 @@ systemctl status proxmox-dns-sync.service --no-pager -l
 journalctl -u proxmox-dns-sync.service -n 50 --no-pager
 ```
 
-This gist contains the sender, receiver, and notification files, **not a complete
-one-command installer for the SSH restrictions, systemd units, or timer**.
-Those parts must be configured for the target systems.
+This repository does not provide a one-command installer. SSH restrictions,
+OpenWrt configuration, and installation of the included units must be configured
+for the target systems.
 
 ### Failure email
 
@@ -164,8 +166,8 @@ Check the service hook with `systemctl show proxmox-dns-sync.service -p OnFailur
 Test delivery through your mail setup and confirm receipt. The notifier only
 observes this service; it cannot report a complete host outage.
 
-Add VLAN 65 to **both** deployed scripts before publishing static records on
-that VLAN. Updating the sender alone does not update the receiver on OpenWrt.
+Both scripts include VLAN 65. Changes to VLAN mappings must be applied to both
+the sender and the receiver.
 
 ## DHCP behavior and record lifecycle
 
@@ -247,8 +249,9 @@ complete original set. Never send a single-record test to the live receiver.
 
 ## Testing
 
-Test mixed static/DHCP inventories, invalid static configurations, and both
-sides of every VLAN mapping with mock inputs before deployment.
+Run the offline sender checks with `python3 -m unittest discover -s tests -v`.
+They use temporary fixtures and do not connect to Proxmox or OpenWrt. Test both
+sides of any changed VLAN mapping before deployment.
 
 For live verification, first inspect the sender's preview, then apply and
 confirm resolution against the configured OpenWrt DNS server. Avoid testing
@@ -270,5 +273,9 @@ with partial record submissions, which can replace the complete managed set.
 
 The original receiver's in-place update approach was validated on Proxmox
 VE 9.2.24 and OpenWrt 25.12.6 with `dnsmasq` running under `ujail`.
-The DHCP-aware sender change was validated with mocked `pct` and `ssh`
-commands. Verify it against your live configuration before scheduling it.
+The direct-configuration sender was deployed and checked on the Proxmox host
+on November 16, 2026. Verify it against your own configuration before scheduling it.
+
+## License
+
+MIT; see [LICENSE](LICENSE).

@@ -1,0 +1,10 @@
+[Unit]
+Description=Synchronize Proxmox LXC DNS records with OpenWrt
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/proxmox-dns-sync --apply
+TimeoutStartSec=30
